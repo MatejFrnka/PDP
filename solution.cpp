@@ -9,7 +9,7 @@
 #include <algorithm>
 #include <chrono>
 
-#define color int
+#define color char
 
 using namespace std;
 static const color NO_COLOR = 0;
@@ -43,8 +43,8 @@ int handleEdge(const Edge *edges, int edgesLen, color *colors, int weight, int i
 
     int res = 0;
     // if graph bipartite after adding edge, add the edge and continue recursion
-    if (colors[nodeAId] != colors[nodeBId]) {
-        colors[nodeBId] = -1 * colors[nodeAId];
+    if (colors[nodeAId] == A_COLOR && colors[nodeBId] != A_COLOR) {
+        colors[nodeBId] = B_COLOR;
         res = maximumBipartite(edges, edgesLen, colors, weight + edges[i].weight, i + 1,
                                remainingWeight - edges[i].weight, maxWeightAchieved);
     }
@@ -64,7 +64,7 @@ int maximumBipartite(const Edge *edges, int edgesLen, color *colors, int weight,
         return weight;
     }
 
-    if (remainingWeight - maxWeightAchieved + weight <= 0) {
+    if (remainingWeight + weight <= maxWeightAchieved) {
         // impossible to improve best result, stop
         return weight;
     }
@@ -133,6 +133,5 @@ int main(int argc, char *argv[]) {
     delete[] colors;
 
     cout << res << endl;
-
     return 0;
 }
