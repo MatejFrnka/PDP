@@ -19,6 +19,7 @@ static const color B_COLOR = -1;
 
 
 int maxWeightAchieved = 0;
+color *bestConfiguration = new color[0];
 
 struct Edge {
     int a;
@@ -68,6 +69,11 @@ void maximumBipartite(const Edge *edges, int edgesLen, color *colors, int colors
                 // check again in critical section
                 if (weight > maxWeightAchieved) {
                     maxWeightAchieved = weight;
+                }
+                delete[] bestConfiguration;
+                bestConfiguration = new color[colorsLen];
+                for (int j = 0; j < colorsLen; ++j) {
+                    bestConfiguration[j] = colors[j];
                 }
             }
         }
@@ -159,19 +165,25 @@ int main(int argc, char *argv[]) {
     }
 
     auto start = chrono::high_resolution_clock::now();
-    #pragma omp parallel default(none) shared(edges, edgesLen, colors, nodeCount, maxWeight)
+    #pragma omp parallel default(none) shared(edges, edgesLen, colors, nodeCount, maxWeight, bestConfiguration)
     {
+
         #pragma omp single
         {
             maximumBipartite(edges, edgesLen, colors, nodeCount, 0, 0, maxWeight);
         }
     }
-    cout << chrono::duration_cast<std::chrono::milliseconds>(chrono::high_resolution_clock::now() - start).count()
-         << endl;
+
+    cout << "evalution time: "
+         << chrono::duration_cast<std::chrono::milliseconds>(chrono::high_resolution_clock::now() - start).count()
+         << "ms" << endl;
 
     delete[] edges;
     delete[] colors;
-
+    for (int i = 0; i < nodeCount; ++i) {
+        cout << i << " - " << (bestConfiguration[i] == A_COLOR) << endl;
+    }
+    delete[] bestConfiguration;
     cout << maxWeightAchieved << endl;
     return 0;
 }
