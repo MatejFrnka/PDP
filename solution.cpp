@@ -8,9 +8,11 @@
 #include <algorithm>
 #include <chrono>
 #include <omp.h>
+#include <cstring>
 
 #define color char
 #define MULTITHREAD_LIMIT 10
+#define SEQUENTIAL_LIMIT 10
 
 using namespace std;
 static const color NO_COLOR = 0;
@@ -31,6 +33,21 @@ struct Edge {
     Edge(int a, int b, int weight) : a(a), b(b), weight(weight) {};
 };
 
+struct State {
+    Edge *edges;
+    int edgesLen;
+    color *colors;
+    int colorsLen;
+    int weight;
+    int i;
+    int remainingWeight;
+
+    State(Edge *edges, int edgesLen, color *colors, int colorsLen, int weight, int i, int remainingWeight) :
+            edges(edges), edgesLen(edgesLen), colors(colors), colorsLen(colorsLen), weight(weight), i(i),
+            remainingWeight(remainingWeight) {
+
+    }
+};
 
 void
 maximumBipartite(const Edge *edges, int edgesLen, color *colors, int colorsLen, int weight, int i, int remainingWeight);
@@ -60,6 +77,24 @@ void handleEdge(const Edge *edges, int edgesLen, color *colors, int colorsLen, i
     colors[nodeBId] = colorB;
 }
 
+
+void maximumBipartiteInit(const Edge *edges, int edgesLen, color *colors, int colorsLen, int weight, int i,
+                          int remainingWeight, vector<State> &states) {
+    if (i > SEQUENTIAL_LIMIT) {
+        auto *cpEdges = new Edge[edgesLen];
+        std::copy(edges, edges + edgesLen, cpEdges);
+
+        auto *cpColors = new color[colorsLen];
+        std::copy(colors, colors + colorsLen, cpColors);
+        states.emplace_back(cpEdges, edgesLen, cpColors, colorsLen, weight, i, remainingWeight);
+        return;
+    }
+
+    handleEdge(edges, edgesLen, colors, colorsLen, weight, i, remainingWeight, edges[i].a, edges[i].b);
+    handleEdge(edges, edgesLen, colors, colorsLen, weight, i, remainingWeight, edges[i].b, edges[i].a);
+    maximumBipartite(edges, edgesLen, colors, colorsLen, weight, i + 1, remainingWeight - edges[i].weight);
+}
+
 void maximumBipartite(const Edge *edges, int edgesLen, color *colors, int colorsLen, int weight, int i,
                       int remainingWeight) {
     if (i == edgesLen) {
@@ -85,41 +120,10 @@ void maximumBipartite(const Edge *edges, int edgesLen, color *colors, int colors
         return;
     }
 
+    handleEdge(edges, edgesLen, colors, colorsLen, weight, i, remainingWeight, edges[i].a, edges[i].b);
+    handleEdge(edges, edgesLen, colors, colorsLen, weight, i, remainingWeight, edges[i].b, edges[i].a);
+    maximumBipartite(edges, edgesLen, colors, colorsLen, weight, i + 1, remainingWeight - edges[i].weight);
 
-    if (i < MULTITHREAD_LIMIT) {
-        auto *colorsNew1 = new color[colorsLen];
-        auto *colorsNew2 = new color[colorsLen];
-        auto *colorsNew3 = new color[colorsLen];
-
-        for (int j = 0; j < colorsLen; ++j) {
-            colorsNew1[j] = colors[j];
-            colorsNew2[j] = colors[j];
-            colorsNew3[j] = colors[j];
-        }
-
-        #pragma omp task default(none) shared(edges, edgesLen, colorsLen) firstprivate(colorsNew1, weight, i, remainingWeight)
-        {
-            handleEdge(edges, edgesLen, colorsNew1, colorsLen, weight, i, remainingWeight, edges[i].a, edges[i].b);
-            delete[] colorsNew1;
-        }
-
-        #pragma omp task default(none) shared(edges, edgesLen) firstprivate(colorsNew2, colorsLen, weight, i, remainingWeight)
-        {
-            handleEdge(edges, edgesLen, colorsNew2, colorsLen, weight, i, remainingWeight, edges[i].b, edges[i].a);
-            delete[] colorsNew2;
-        }
-
-        #pragma omp task default(none) shared(edges, edgesLen) firstprivate(colorsNew3, colorsLen, weight, i, remainingWeight)
-        {
-            // run recursion without adding the edge
-            maximumBipartite(edges, edgesLen, colorsNew3, colorsLen, weight, i + 1, remainingWeight - edges[i].weight);
-            delete[] colorsNew3;
-        }
-    } else {
-        handleEdge(edges, edgesLen, colors, colorsLen, weight, i, remainingWeight, edges[i].a, edges[i].b);
-        handleEdge(edges, edgesLen, colors, colorsLen, weight, i, remainingWeight, edges[i].b, edges[i].a);
-        maximumBipartite(edges, edgesLen, colors, colorsLen, weight, i + 1, remainingWeight - edges[i].weight);
-    }
 }
 
 int main(int argc, char *argv[]) {
@@ -165,13 +169,14 @@ int main(int argc, char *argv[]) {
     }
 
     auto start = chrono::high_resolution_clock::now();
-    #pragma omp parallel default(none) shared(edges, edgesLen, colors, nodeCount, maxWeight, bestConfiguration)
-    {
+    auto states = vector<State>();
 
-        #pragma omp single
-        {
-            maximumBipartite(edges, edgesLen, colors, nodeCount, 0, 0, maxWeight);
-        }
+    maximumBipartiteInit(edges, edgesLen, colors, nodeCount, 0, 0, maxWeight, states);
+
+    #pragma omp parallel for schedule(dynamic) default(none) shared(states)
+    for (int i = 0; i < states.size(); ++i) {
+        maximumBipartite(states[i].edges, states[i].edgesLen, states[i].colors, states[i].colorsLen, states[i].weight,
+                         states[i].i, states[i].remainingWeight);
     }
 
     cout << "evalution time: "
