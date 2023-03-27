@@ -11,7 +11,6 @@
 #include <cstring>
 
 #define color char
-#define MULTITHREAD_LIMIT 10
 #define SEQUENTIAL_LIMIT 10
 
 using namespace std;
@@ -49,8 +48,11 @@ struct State {
     }
 };
 
-void
-maximumBipartite(const Edge *edges, int edgesLen, color *colors, int colorsLen, int weight, int i, int remainingWeight);
+void maximumBipartite(const Edge *edges, int edgesLen, color *colors, int colorsLen, int weight, int i,
+                      int remainingWeight);
+
+void maximumBipartiteInit(const Edge *edges, int edgesLen, color *colors, int colorsLen, int weight, int i,
+                          int remainingWeight, vector<State> &states);
 
 void handleEdge(const Edge *edges, int edgesLen, color *colors, int colorsLen, int weight, int i, int remainingWeight,
                 int nodeAId,
@@ -64,7 +66,6 @@ void handleEdge(const Edge *edges, int edgesLen, color *colors, int colorsLen, i
         colors[nodeAId] = A_COLOR;
     }
 
-    int res = 0;
     // if graph bipartite after adding edge, add the edge and continue recursion
     if (colors[nodeAId] == A_COLOR && colors[nodeBId] != A_COLOR) {
         colors[nodeBId] = B_COLOR;
@@ -77,6 +78,28 @@ void handleEdge(const Edge *edges, int edgesLen, color *colors, int colorsLen, i
     colors[nodeBId] = colorB;
 }
 
+void handleEdgeInit(const Edge *edges, int edgesLen, color *colors, int colorsLen, int weight, int i,
+                    int remainingWeight, int nodeAId, int nodeBId, vector<State> &states) {
+    // save colors
+    color colorA = colors[nodeAId];
+    color colorB = colors[nodeBId];
+
+    // set color A if not set already
+    if (colors[nodeAId] == NO_COLOR) {
+        colors[nodeAId] = A_COLOR;
+    }
+
+    // if graph bipartite after adding edge, add the edge and continue recursion
+    if (colors[nodeAId] == A_COLOR && colors[nodeBId] != A_COLOR) {
+        colors[nodeBId] = B_COLOR;
+        maximumBipartiteInit(edges, edgesLen, colors, colorsLen, weight + edges[i].weight, i + 1,
+                             remainingWeight - edges[i].weight, states);
+    }
+
+    // revert colors to previous state
+    colors[nodeAId] = colorA;
+    colors[nodeBId] = colorB;
+}
 
 void maximumBipartiteInit(const Edge *edges, int edgesLen, color *colors, int colorsLen, int weight, int i,
                           int remainingWeight, vector<State> &states) {
@@ -90,9 +113,9 @@ void maximumBipartiteInit(const Edge *edges, int edgesLen, color *colors, int co
         return;
     }
 
-    handleEdge(edges, edgesLen, colors, colorsLen, weight, i, remainingWeight, edges[i].a, edges[i].b);
-    handleEdge(edges, edgesLen, colors, colorsLen, weight, i, remainingWeight, edges[i].b, edges[i].a);
-    maximumBipartite(edges, edgesLen, colors, colorsLen, weight, i + 1, remainingWeight - edges[i].weight);
+    handleEdgeInit(edges, edgesLen, colors, colorsLen, weight, i, remainingWeight, edges[i].a, edges[i].b, states);
+    handleEdgeInit(edges, edgesLen, colors, colorsLen, weight, i, remainingWeight, edges[i].b, edges[i].a, states);
+    maximumBipartiteInit(edges, edgesLen, colors, colorsLen, weight, i + 1, remainingWeight - edges[i].weight, states);
 }
 
 void maximumBipartite(const Edge *edges, int edgesLen, color *colors, int colorsLen, int weight, int i,
@@ -172,6 +195,7 @@ int main(int argc, char *argv[]) {
     auto states = vector<State>();
 
     maximumBipartiteInit(edges, edgesLen, colors, nodeCount, 0, 0, maxWeight, states);
+    cout << "size: " << states.size() << endl;
 
     #pragma omp parallel for schedule(dynamic) default(none) shared(states)
     for (int i = 0; i < states.size(); ++i) {
