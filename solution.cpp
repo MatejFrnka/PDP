@@ -12,8 +12,9 @@
 
 #define color char
 #define SEQUENTIAL_LIMIT 10
+#define MULTITHREAD_LIMIT 15
+
 #define NODE_COUNT 150
-#define EDGE_COUNT 4219
 
 #define TAG_TASK_EDGES 0
 #define TAG_DONE 1
@@ -46,19 +47,17 @@ struct Edge {
 };
 
 struct State {
-    int edgesLen;
     int colorsLen;
     int weight;
     int i;
     int remainingWeight;
+    int bestAchievedWeight;
     color colors[NODE_COUNT];
-    Edge *edges;
 
     State() = default;
 
-    State(Edge *edges, int edgesLen, color *colors, int colorsLen, int weight, int i, int remainingWeight) :
-            edges(edges), edgesLen(edgesLen), colorsLen(colorsLen), weight(weight), i(i),
-            remainingWeight(remainingWeight) {
+    State(const color *colors, int colorsLen, int weight, int i, int remainingWeight) :
+            colorsLen(colorsLen), weight(weight), i(i), remainingWeight(remainingWeight), bestAchievedWeight(0) {
         for (int j = 0; j < colorsLen; ++j) {
             this->colors[j] = colors[j];
         }
@@ -125,7 +124,7 @@ void maximumBipartiteInit(const Edge *edges, int edgesLen, color *colors, int co
 
         auto *cpColors = new color[colorsLen];
         std::copy(colors, colors + colorsLen, cpColors);
-        states.emplace_back(cpEdges, edgesLen, cpColors, colorsLen, weight, i, remainingWeight);
+        states.emplace_back(cpColors, colorsLen, weight, i, remainingWeight);
         return;
     }
 
@@ -138,10 +137,14 @@ void maximumBipartite(const Edge *edges, int edgesLen, color *colors, int colors
                       int remainingWeight) {
     if (i == edgesLen) {
         if (weight > maxWeightAchieved) {
+            #pragma omp critical
             {
-                maxWeightAchieved = weight;
-                for (int j = 0; j < colorsLen; ++j) {
-                    bestConfiguration[j] = colors[j];
+                // check again in critical section
+                if (weight > maxWeightAchieved) {
+                    maxWeightAchieved = weight;
+                    for (int j = 0; j < colorsLen; ++j) {
+                        bestConfiguration[j] = colors[j];
+                    }
                 }
             }
         }
@@ -153,10 +156,41 @@ void maximumBipartite(const Edge *edges, int edgesLen, color *colors, int colors
         return;
     }
 
-    handleEdge(edges, edgesLen, colors, colorsLen, weight, i, remainingWeight, edges[i].a, edges[i].b);
-    handleEdge(edges, edgesLen, colors, colorsLen, weight, i, remainingWeight, edges[i].b, edges[i].a);
-    maximumBipartite(edges, edgesLen, colors, colorsLen, weight, i + 1, remainingWeight - edges[i].weight);
 
+    if (i < MULTITHREAD_LIMIT) {
+        auto *colorsNew1 = new color[colorsLen];
+        auto *colorsNew2 = new color[colorsLen];
+        auto *colorsNew3 = new color[colorsLen];
+
+        for (int j = 0; j < colorsLen; ++j) {
+            colorsNew1[j] = colors[j];
+            colorsNew2[j] = colors[j];
+            colorsNew3[j] = colors[j];
+        }
+
+        #pragma omp task default(none) shared(edges, edgesLen, colorsLen) firstprivate(colorsNew1, weight, i, remainingWeight)
+        {
+            handleEdge(edges, edgesLen, colorsNew1, colorsLen, weight, i, remainingWeight, edges[i].a, edges[i].b);
+            delete[] colorsNew1;
+        }
+
+        #pragma omp task default(none) shared(edges, edgesLen) firstprivate(colorsNew2, colorsLen, weight, i, remainingWeight)
+        {
+            handleEdge(edges, edgesLen, colorsNew2, colorsLen, weight, i, remainingWeight, edges[i].b, edges[i].a);
+            delete[] colorsNew2;
+        }
+
+        #pragma omp task default(none) shared(edges, edgesLen) firstprivate(colorsNew3, colorsLen, weight, i, remainingWeight)
+        {
+            // run recursion without adding the edge
+            maximumBipartite(edges, edgesLen, colorsNew3, colorsLen, weight, i + 1, remainingWeight - edges[i].weight);
+            delete[] colorsNew3;
+        }
+    } else {
+        handleEdge(edges, edgesLen, colors, colorsLen, weight, i, remainingWeight, edges[i].a, edges[i].b);
+        handleEdge(edges, edgesLen, colors, colorsLen, weight, i, remainingWeight, edges[i].b, edges[i].a);
+        maximumBipartite(edges, edgesLen, colors, colorsLen, weight, i + 1, remainingWeight - edges[i].weight);
+    }
 }
 
 
@@ -212,6 +246,13 @@ int main(int argc, char *argv[]) {
         // sort edges descending
         sort(edges, edges + edgesLen, [](Edge &a, Edge &b) { return a.weight > b.weight; });
 
+        int edgesSize = static_cast<int>(sizeof(Edge)) * edgesLen;
+        // send edges to slave processes
+        for (int i = 1; i < size; ++i) {
+            MPI_Send(&edgesLen, 1, MPI_INT, i, TAG_STOP, MPI_COMM_WORLD);
+            MPI_Send(edges, edgesSize, MPI_CHAR, i, TAG_TASK_EDGES, MPI_COMM_WORLD);
+        }
+
         auto *colors = new color[nodeCount];
         for (int i = 0; i < nodeCount; ++i) {
             colors[i] = NO_COLOR;
@@ -221,21 +262,18 @@ int main(int argc, char *argv[]) {
         auto states = vector<State>();
         maximumBipartiteInit(edges, edgesLen, colors, nodeCount, 0, 0, maxWeight, states);
 
-        Outcome maximum{maxWeight = 0};
+        Outcome maximum{};
 
         for (int i = 1; i <= states.size(); ++i) {
-            char *stateBuffer = (char *) &states[i];
             int target = i;
             if (i >= size) {
                 MPI_Status status;
                 handleIncomingMessage(maximum, status);
                 target = status.MPI_SOURCE;
             }
-
-            int edgesSize = static_cast<int>(sizeof(Edge)) * states[i].edgesLen;
-
-            MPI_Send(stateBuffer, sizeof(State), MPI_CHAR, target, TAG_TASK_INIT, MPI_COMM_WORLD);
-            MPI_Send(states[i].edges, edgesSize, MPI_CHAR, target, TAG_TASK_EDGES, MPI_COMM_WORLD);
+            State *toSend = &states[i];
+            toSend->bestAchievedWeight = maximum.maxWeight;
+            MPI_Send(&states[i], sizeof(State), MPI_CHAR, target, TAG_TASK_INIT, MPI_COMM_WORLD);
         }
         // finish
         for (int i = 1; i < size; ++i) {
@@ -256,22 +294,33 @@ int main(int argc, char *argv[]) {
         cout << endl;
 
     } else {
+        // receive edges from master
+        int edgesLen;
+        MPI_Recv(&edgesLen, 1, MPI_INT, 0, MPI_ANY_TAG, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+        int bufferSize = static_cast<int>(sizeof(Edge)) * edgesLen;
+        char *buffer = new char[bufferSize];
+        MPI_Recv(buffer, bufferSize, MPI_CHAR, 0, MPI_ANY_TAG, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+
+        Edge *edges = (Edge *) buffer;
+
         while (true) {
             MPI_Status status;
             State state{};
             MPI_Recv(&state, sizeof(State), MPI_CHAR, 0, MPI_ANY_TAG, MPI_COMM_WORLD, &status);
-
             if (status.MPI_TAG == TAG_STOP) {
                 break;
             }
+            // share best weight
+            maxWeightAchieved = state.bestAchievedWeight;
 
-            int bufferSize = static_cast<int>(sizeof(Edge)) * state.edgesLen;
-            char *buffer = new char[bufferSize];
-            MPI_Recv(buffer, bufferSize, MPI_CHAR, 0, MPI_ANY_TAG, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-
-            state.edges = (Edge *) buffer;
-            maximumBipartite(state.edges, state.edgesLen, state.colors, state.colorsLen,
-                             state.weight, state.i, state.remainingWeight);
+            #pragma omp parallel default(none) shared(edges, edgesLen, state, bestConfiguration) num_threads(6)
+            {
+                #pragma omp single
+                {
+                    maximumBipartite(edges, edgesLen, state.colors, state.colorsLen, state.weight, state.i,
+                                     state.remainingWeight);
+                }
+            }
 
             Outcome outcome{maxWeightAchieved};
             for (int i = 0; i < state.colorsLen; ++i) {
@@ -285,3 +334,11 @@ int main(int argc, char *argv[]) {
     MPI_Finalize();
     return 0;
 }
+
+
+C:\Windows\system32\wsl.exe --distribution Ubuntu --exec /bin/bash -c "cd /mnt/c/Users/matfr/CLionProjects/NI_PDP && /usr/bin/mpirun -np 4 ./cmake-build-wsl/NI_PDP graf_bpo/graf_10_6.txt"
+evalution time: 3024ms
+result: 2000
+-1, 1, 1, 1, 1, -1, -1, -1, -1, 1,
+
+Process finished with exit code 0
